@@ -1,0 +1,18 @@
+[project]
+name = "gh"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "django>=6.0.1",
+    "django-dotenv>=1.4.2",
+    "folium>=0.20.0",
+    "geopy>=2.4.1",
+    "google-genai>=1.60.0",
+    "ipykernel>=7.1.0",
+    "matplotlib>=3.10.8",
+    "opencv-python>=4.13.0.90",
+    "pydantic>=2.12.5",
+    "scikit-image>=0.26.0",
+    "torchvision>=0.25.0",
+]
