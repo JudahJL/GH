@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from PIL import Image, ExifTags
 from django.conf import settings
+from django.db.models import Q
 from geopy import Nominatim
 from google import genai
 from skimage.metrics import structural_similarity
@@ -14,6 +15,7 @@ from torch import nn
 from torchvision import models, transforms
 from torchvision.models import ResNet
 
+from main.models import TrashTicket
 from main.pydantic_models import MunicipalReport, DuplicateCheck, ImageExif
 
 CLASS_NAMES = ["0_clean_road", "1_dirty_road", "2_urban_waste"]
@@ -160,9 +162,6 @@ def generate_inspector_report(img: Image.Image):
     return response.parsed
 
 
-TICKET_DB = {}
-
-
 def create_or_update_ticket(location_id: str, image_path: str, is_duplicate=False, gemini_report=None, latitude=None,
                             longitude=None, camera_model=None):
     # manage duplicate and create Municipal ticket
@@ -202,11 +201,12 @@ def create_or_update_ticket(location_id: str, image_path: str, is_duplicate=Fals
     return new_ticket
 
 
-def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif, location_id="Ward_5_Lake_Road"):
+def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif):
     nominatim = Nominatim(user_agent="testing")
-    pincode: str = nominatim.reverse((image_exif.latitude, image_exif.longitude,), exactly_one=True).raw['address']['postcode']
-    # TODO: put django filepath from django file storage
-    image_path = ""
+    location = nominatim.reverse(query=(image_exif.latitude, image_exif.longitude,), exactly_one=True)
+
+    osm_id, osm_type = location.raw['osm_id'], location.raw['osm_type']
+
     img_transformed = test_transforms(img).unsqueeze(0).to(device)
 
     with torch.inference_mode():
@@ -224,9 +224,12 @@ def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif, location_id
 
     # The Duplicate Cheks
     is_duplicate = False
-
-    if location_id in TICKET_DB and TICKET_DB[location_id]['status'] == 'OPEN':
-        old_image_path = TICKET_DB[location_id]['latest_image_path']
+    query = Q(osm_id=osm_id) & Q(osm_type=osm_type) & Q(status=TrashTicket.Status.OPEN)
+    old_ticket = TrashTicket.objects.filter(query).first()
+    if old_ticket:
+        old_image_path = old_ticket.image
+        print(old_image_path, type(old_image_path))
+        raise RuntimeError
 
         # a. Fast pixel check
         if fast_pixel_check(img, old_image_path):
@@ -244,7 +247,8 @@ def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif, location_id
                 TICKET_DB[location_id]['status'] = "RESOLVED"
 
     if is_duplicate:
-        return create_or_update_ticket(location_id, image_path, is_duplicate=True)
+        return {}
+        # return create_or_update_ticket(location_id, image_path, is_duplicate=True)
     else:
         print(" Potential Waste Detected. Requesting for gemini verification...")
         gemini_report = generate_inspector_report(img)
@@ -256,7 +260,8 @@ def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif, location_id
 
         # generate the ticket
         print("Generating the ticket")
-        ticket = create_or_update_ticket(location_id, image_path, is_duplicate=False, gemini_report=gemini_report,
-                                         latitude=image_exif.latitude, longitude=image_exif.longitude,
-                                         camera_model=image_exif.camera_model)
-        return ticket
+        # ticket = create_or_update_ticket(location_id, image_path, is_duplicate=False, gemini_report=gemini_report,
+        #                                  latitude=image_exif.latitude, longitude=image_exif.longitude,
+        #                                  camera_model=image_exif.camera_model)
+        # return ticket
+        return {}

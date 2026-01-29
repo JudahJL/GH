@@ -1,7 +1,7 @@
 from django.contrib import admin
 
-from main.models import TrashReport, TrashTicket
+from main.models import TrashTicket
 
 # Register your models here.
-for model in (TrashReport, TrashTicket):
+for model in (TrashTicket,):
     admin.site.register(model)
