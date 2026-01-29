@@ -17,7 +17,7 @@ class TrashTicket(models.Model):
     osm_id = models.IntegerField(null=False, blank=False)
     osm_type = models.TextField(null=False, blank=False)
     status = models.IntegerField(null=False, blank=False, choices=Status)
-    first_reported = models.DateField(null=False, blank=False)
+    first_reported = models.DateTimeField(null=False, blank=False)
     last_seen = models.DateField(null=False, blank=False)
     severity = models.PositiveSmallIntegerField(null=False, blank=False, validators=[MinValueValidator(0), MaxValueValidator(10)])
     action = models.TextField(null=True, blank=True)
@@ -25,6 +25,7 @@ class TrashTicket(models.Model):
     latitude = models.FloatField(null=False, blank=False)
     longitude = models.FloatField(null=False, blank=False)
     camera_model = models.TextField(null=True, blank=True)
+    hours_unattended = models.FloatField(null=False, blank=False)
 
     class Meta:
         constraints = [

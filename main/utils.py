@@ -1,12 +1,14 @@
+import io
 import uuid
-from datetime import datetime
-from typing import Tuple
+from datetime import datetime, timezone
+from typing import Tuple, Optional
 
 import cv2
 import numpy as np
 import torch
 from PIL import Image, ExifTags
 from django.conf import settings
+from django.core.files.base import ContentFile
 from django.db.models import Q
 from geopy import Nominatim
 from google import genai
@@ -96,27 +98,23 @@ def extract_exif_metadata(img: Image.Image) -> ImageExif:
     return ImageExif(latitude=lat, longitude=lon, camera_make=camera_make, camera_model=camera_model)
 
 
-def fast_pixel_check(a_img1: Image.Image, img2_path: str) -> bool:
-    print("DEBUG old_image_path type:", type(img2_path), img2_path)
-
+def fast_pixel_check(a_img1: Image.Image, a_img2: Image.Image) -> bool:
     img1 = cv2.cvtColor(np.array(a_img1), cv2.COLOR_RGB2BGR)
-    img2 = cv2.imread(img2_path, cv2.IMREAD_GRAYSCALE)
+    img2 = cv2.cvtColor(np.array(a_img2), cv2.COLOR_RGB2BGR)
 
     size = (224, 224,)
     # resize the images to match
     img1 = cv2.resize(img1, size)
     img2 = cv2.resize(img2, size)
 
-    score, _ = structural_similarity(img1, img2, full=True)
+    score, _ = structural_similarity(img1, img2, channel_axis=-1, full=True)
     return score > 0.95  # 95%
 
 
 client = genai.Client(api_key=settings.GEMINI_API_KEY)
 
 
-def check_if_duplicate_waste(old_image_path: str, img_new: Image.Image):
-    img_old = Image.open(old_image_path)
-
+def check_if_duplicate_waste(img_old: Image.Image, img_new: Image.Image):
     prompt_for_duplicate = """
     You are a visual similarity AI for a Smart City.
     Look at Image 1 (Past) and Image 2 (Present).
@@ -162,43 +160,43 @@ def generate_inspector_report(img: Image.Image):
     return response.parsed
 
 
-def create_or_update_ticket(location_id: str, image_path: str, is_duplicate=False, gemini_report=None, latitude=None,
-                            longitude=None, camera_model=None):
+def create_or_update_ticket(osm_id: Optional[int] = None, osm_type: Optional[str] = None,
+                            img: Optional[Image.Image] = None,
+                            ticket: Optional[TrashTicket] = None,
+                            image_exif: Optional[ImageExif] = None,
+                            gemini_report: Optional[MunicipalReport] = None) -> TrashTicket:
     # manage duplicate and create Municipal ticket
-    current_time = datetime.now()
+    current_time = datetime.now(timezone.utc)
+    buff = io.BytesIO()
+    img.save(buff, format='JPEG')
 
-    if is_duplicate:
-        existing_ticket = TICKET_DB[location_id]
-        time_elapsed = current_time - existing_ticket["first_reported"]
+    file = ContentFile(buff.getvalue())
+    filename = f"image_{uuid.uuid4()}.jpg"
+
+    if ticket is not None:
+        time_elapsed = current_time - ticket.first_reported
         hours_ignored = round(time_elapsed.total_seconds() / 3600, 1)
 
         # Update the existing tickets
-        existing_ticket['last_seen'] = current_time
-        existing_ticket['hours_unattended'] = hours_ignored
-        existing_ticket['latest_image_path'] = image_path
+        ticket.last_seen = current_time
+        ticket.hours_unattended = hours_ignored
+        ticket.image.save(filename, file, save=False)
+        ticket.save()
 
-        return existing_ticket
+        return ticket
 
-    ticket_id = f"TKT-{str(uuid.uuid4())[:4].upper()}"
+    ticket = TrashTicket.objects.create(osm_type=osm_type, osm_id=osm_id, status=TrashTicket.Status.OPEN,
+                                        first_reported=current_time,
+                                        last_seen=current_time,
+                                        hours_unattended=0.0,
+                                        severity=gemini_report.severity_score if gemini_report else 0,
+                                        action=gemini_report.action_required if gemini_report else "N/A",
+                                        latitude=image_exif.latitude, longitude=image_exif.longitude,
+                                        camera_model=image_exif.camera_model)
 
-    new_ticket = {
-        "ticket_id": ticket_id,
-        "location_id": location_id,
-        "status": "OPEN",
-        "first_reported": current_time,
-        "last_seen": current_time,
-        "hours_unattended": 0.0,
-        "severity": gemini_report.severity_score if gemini_report else 0,
-        "action": gemini_report.action_required if gemini_report else "N/A",
-        "latest_image_path": image_path,
-        "latitude": latitude,
-        "longitude": longitude,
-        "camera_model": camera_model,
-    }
-
-    TICKET_DB[ticket_id] = new_ticket
-    print(f"Ticket created: {ticket_id} for {location_id}")
-    return new_ticket
+    ticket.image.save(filename, file, save=False)
+    ticket.save()
+    return ticket
 
 
 def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif):
@@ -227,28 +225,27 @@ def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif):
     query = Q(osm_id=osm_id) & Q(osm_type=osm_type) & Q(status=TrashTicket.Status.OPEN)
     old_ticket = TrashTicket.objects.filter(query).first()
     if old_ticket:
-        old_image_path = old_ticket.image
-        print(old_image_path, type(old_image_path))
-        raise RuntimeError
+        old_image = Image.open(old_ticket.image)
+        old_image = old_image.convert("RGB")
 
         # a. Fast pixel check
-        if fast_pixel_check(img, old_image_path):
+        if fast_pixel_check(img, old_image):
             print("Same image detected locally")
             is_duplicate = True
 
         else:
             # b. Gemini Visual Comparison
             print("Running gemini duplication check")
-            duplicate_report = check_if_duplicate_waste(old_image_path, img)
+            duplicate_report = check_if_duplicate_waste(old_image, img)
             is_duplicate = duplicate_report.is_same
 
             if not is_duplicate:
                 print("Old trash cleared.")
-                TICKET_DB[location_id]['status'] = "RESOLVED"
+                old_ticket.status = TrashTicket.Status.RESOLVED
+                old_ticket.save(update_fields=['status'])
 
     if is_duplicate:
-        return {}
-        # return create_or_update_ticket(location_id, image_path, is_duplicate=True)
+        return create_or_update_ticket(img=img, ticket=old_ticket)
     else:
         print(" Potential Waste Detected. Requesting for gemini verification...")
         gemini_report = generate_inspector_report(img)
@@ -260,8 +257,6 @@ def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif):
 
         # generate the ticket
         print("Generating the ticket")
-        # ticket = create_or_update_ticket(location_id, image_path, is_duplicate=False, gemini_report=gemini_report,
-        #                                  latitude=image_exif.latitude, longitude=image_exif.longitude,
-        #                                  camera_model=image_exif.camera_model)
-        # return ticket
-        return {}
+        ticket = create_or_update_ticket(gemini_report=gemini_report,
+                                         image_exif=image_exif, osm_id=osm_id, osm_type=osm_type, img=img)
+        return ticket

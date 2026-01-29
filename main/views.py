@@ -34,4 +34,4 @@ def index(request):
         'map': getattr(m.get_root(), '_repr_html_')(),
         'result': result
     }
-    return render(request, 'main/index1.html', context=context)
+    return render(request, 'main/index.html', context=context)
