@@ -4,12 +4,14 @@ from datetime import datetime, timezone
 from typing import Tuple, Optional
 
 import cv2
+import folium
 import numpy as np
 import torch
 from PIL import Image, ExifTags
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.db.models import Q
+from folium.plugins import HeatMap
 from geopy import Nominatim
 from google import genai
 from skimage.metrics import structural_similarity
@@ -200,10 +202,25 @@ def create_or_update_ticket(osm_id: Optional[int] = None, osm_type: Optional[str
 
 
 def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif):
-    nominatim = Nominatim(user_agent="testing")
-    location = nominatim.reverse(query=(image_exif.latitude, image_exif.longitude,), exactly_one=True)
+    if image_exif.latitude is None or image_exif.longitude is None:
+        print("Image has no GPS data.")
+        return {
+            "status": "Error",
+            "message": "GPS Missing: This image has no location data. Please upload an original photo taken with location services enabled."
+        }
 
-    osm_id, osm_type = location.raw['osm_id'], location.raw['osm_type']
+    osm_id, osm_type = None, None
+
+    try:
+
+        nominatim = Nominatim(user_agent="testing")
+
+        location = nominatim.reverse(query=(image_exif.latitude, image_exif.longitude,), exactly_one=True)
+
+        osm_id, osm_type = location.raw['osm_id'], location.raw['osm_type']
+
+    except Exception as e:
+        print(f"Geocoding service failed: {e}")
 
     img_transformed = test_transforms(img).unsqueeze(0).to(device)
 
@@ -260,3 +277,81 @@ def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif):
         ticket = create_or_update_ticket(gemini_report=gemini_report,
                                          image_exif=image_exif, osm_id=osm_id, osm_type=osm_type, img=img)
         return ticket
+
+
+# --- Map Generation Functions (Fixed) ---
+
+def generate_incident_map(tickets):
+    """Generates a Folium map with colored markers for tickets."""
+    # Centered on Udaipur (or default)
+    center_lat, center_lon = 17.3616, 78.4747
+
+    # FIX 1: Set explicit height=350 (pixels) so it doesn't collapse
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=13, width="100%", height=350)
+
+    # Check if we have tickets to center the map better
+    valid_tickets = [t for t in tickets if t.latitude and t.longitude]
+    if valid_tickets:
+        # Optional: Center map on the latest ticket
+        latest = valid_tickets[0]
+        m.location = [latest.latitude, latest.longitude]
+
+    for ticket in tickets:
+        if ticket.latitude is None or ticket.longitude is None:
+            continue
+
+        # Color logic
+        if ticket.status == TrashTicket.Status.RESOLVED:
+            color = "green"
+            status_text = "CLEARED"
+        elif ticket.severity >= 7:
+            color = "red"
+            status_text = "URGENT"
+        else:
+            color = "orange"
+            status_text = "OPEN"
+
+        popup_html = f"""
+        <b>Ticket:</b> {ticket.id}<br>
+        <b>Status:</b> {status_text}<br>
+        <b>Severity:</b> {ticket.severity}/10<br>
+        <b>Unattended:</b> {ticket.hours_unattended} hrs
+        """
+
+        folium.CircleMarker(
+            location=[ticket.latitude, ticket.longitude],
+            radius=8 + (ticket.severity / 2),
+            color=color,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.7,
+            popup=folium.Popup(popup_html, max_width=200)
+        ).add_to(m)
+
+    return m._repr_html_()
+
+
+def generate_heatmap(tickets):
+    """Generates a density heatmap."""
+    center_lat, center_lon = 17.3616, 78.4747
+
+    # FIX 2: Removed 'tiles="CartoDB dark_matter"' (Now uses default Light map)
+    # FIX 1: Set explicit height=350
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=13, width="100%", height=350)
+
+    heat_data = []
+    for ticket in tickets:
+        if ticket.latitude and ticket.longitude:
+            # Weight formula
+            weight = max(ticket.severity * max(ticket.hours_unattended, 1.0), 1.0)
+            heat_data.append([ticket.latitude, ticket.longitude, weight])
+
+    if heat_data:
+        HeatMap(
+            heat_data,
+            radius=25,
+            blur=15,
+            min_opacity=0.4
+        ).add_to(m)
+
+    return m._repr_html_()

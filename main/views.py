@@ -1,37 +1,59 @@
-import folium
 from PIL import Image
-from django.shortcuts import render
+from django.shortcuts import render, redirect
+from django.urls import reverse
 
 from .forms import GarbageForm
-from .utils import extract_exif_metadata, run_smart_city_pipeline
+from .models import TrashTicket
+from .utils import extract_exif_metadata, run_smart_city_pipeline, generate_incident_map, generate_heatmap
 
 
 def index(request):
-    center_lat, center_lon = 24.5854, 73.6815
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=13)
-    m.get_root().width = "800px"
-    m.get_root().height = "600px"
-
-    result = None
-
     if request.method == 'POST':
         form = GarbageForm(request.POST, request.FILES)
         if form.is_valid():
             img_file = form.cleaned_data['img']
 
+            # Open image for processing
             image = Image.open(img_file)
+
+            # Extract metadata (GPS)
             exif = extract_exif_metadata(image)
+
+            # Ensure RGB for model
             image = image.convert("RGB")
 
+            # Run the AI Pipeline
             result = run_smart_city_pipeline(image, image_exif=exif)
-
-            print(result)
+            request.session['result'] = result.pk if type(result) == TrashTicket else result
+            return redirect(reverse('index'))
     else:
         form = GarbageForm()
 
+    # --- Fetch Data for Dashboard ---
+    tickets = TrashTicket.objects.all().order_by('-first_reported')
+
+    # Calculate simple stats
+    total_tickets = tickets.count()
+    open_tickets = tickets.filter(status=TrashTicket.Status.OPEN).count()
+
+    # --- Generate Maps ---
+    # These functions now return HTML strings (iframe/divs) to embed directly
+    incident_map_html = generate_incident_map(tickets)
+    heatmap_html = generate_heatmap(tickets)
+
+    result = request.session.pop('result', None)
+    if result is not None and type(result) is int:
+        result = TrashTicket.objects.get(pk=result)
+
     context = {
         'form': form,
-        'map': getattr(m.get_root(), '_repr_html_')(),
-        'result': result
+        'incident_map': incident_map_html,
+        'heatmap': heatmap_html,
+        'tickets': tickets[:10],
+        'result': result,
+        'stats': {
+            'total': total_tickets,
+            'open': open_tickets
+        }
     }
     return render(request, 'main/index.html', context=context)
