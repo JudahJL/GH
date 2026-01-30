@@ -261,8 +261,22 @@ def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif):
                 old_ticket.status = TrashTicket.Status.RESOLVED
                 old_ticket.save(update_fields=['status'])
 
+    # if is_duplicate:
+    #     return create_or_update_ticket(img=img, ticket=old_ticket)
     if is_duplicate:
-        return create_or_update_ticket(img=img, ticket=old_ticket)
+        # Update the ticket in DB
+        updated_ticket = create_or_update_ticket(img=img, ticket=old_ticket)
+
+        # --- FIX: Return a Dictionary with "Duplicate" status instead of the object ---
+        return {
+            "status": "Duplicate",
+            "message": "This specific waste pile is already tracked in our system.",
+            "severity": updated_ticket.severity,
+            "action": updated_ticket.action,
+            "hours_unattended": updated_ticket.hours_unattended,
+            "ticket_id": updated_ticket.id,
+            "waste_type": "Urban Mix"
+        }
     else:
         print(" Potential Waste Detected. Requesting for gemini verification...")
         gemini_report = generate_inspector_report(img)
@@ -281,13 +295,13 @@ def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif):
 
 # --- Map Generation Functions (Fixed) ---
 
-def generate_incident_map(tickets):
+def generate_incident_map(tickets, height="350px"):
     """Generates a Folium map with colored markers for tickets."""
     # Centered on Udaipur (or default)
     center_lat, center_lon = 17.3616, 78.4747
 
     # FIX 1: Set explicit height=350 (pixels) so it doesn't collapse
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=13, width="100%", height=350)
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=13, width="100%", height=height)
 
     # Check if we have tickets to center the map better
     valid_tickets = [t for t in tickets if t.latitude and t.longitude]
@@ -331,13 +345,13 @@ def generate_incident_map(tickets):
     return m._repr_html_()
 
 
-def generate_heatmap(tickets):
+def generate_heatmap(tickets, height="350px"):
     """Generates a density heatmap."""
     center_lat, center_lon = 17.3616, 78.4747
 
     # FIX 2: Removed 'tiles="CartoDB dark_matter"' (Now uses default Light map)
     # FIX 1: Set explicit height=350
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=13, width="100%", height=350)
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=13, width="100%", height=height)
 
     heat_data = []
     for ticket in tickets:

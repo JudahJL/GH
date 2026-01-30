@@ -57,3 +57,37 @@ def index(request):
         }
     }
     return render(request, 'main/index.html', context=context)
+
+
+def live_map(request):
+    """Renders a full-screen map view."""
+    tickets = TrashTicket.objects.all().order_by('-first_reported')
+
+    # Generate maps with 100% height for full-screen experience
+    incident_map_html = generate_incident_map(tickets, height="100%")
+    heatmap_html = generate_heatmap(tickets, height="100%")
+
+    context = {
+        'incident_map': incident_map_html,
+        'heatmap': heatmap_html,
+        'stats': {
+            'total': tickets.count(),
+            'open': tickets.filter(status=TrashTicket.Status.OPEN).count()
+        }
+    }
+    return render(request, 'main/live_map.html', context=context)
+
+
+def ticket_registry(request):
+    """Renders the full database registry."""
+    tickets = TrashTicket.objects.all().order_by('-first_reported')
+
+    context = {
+        'tickets': tickets,
+        'stats': {
+            'total': tickets.count(),
+            'open': tickets.filter(status=TrashTicket.Status.OPEN).count(),
+            'urgent': tickets.filter(severity__gte=7).count()
+        }
+    }
+    return render(request, 'main/registry.html', context=context)

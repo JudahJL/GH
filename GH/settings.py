@@ -12,7 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 import os
 from pathlib import Path
 
-import dj-database_url
+import dj_database_url
 import dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -86,15 +86,13 @@ WSGI_APPLICATION = 'GH.wsgi.application'
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 DATABASES = {
-    'default': dj-database_url.config(
+    'default': dj_database_url.config(
         env='DATABASE_URL',
         default=f'sqlite:///{BASE_DIR / 'db.sqlite3'}',
         conn_health_checks=True,
         conn_max_age=600,
     )
 }
-
-print(DATABASES)
 
 # Storage
 # https://docs.djangoproject.com/en/6.0/ref/settings/#storages
