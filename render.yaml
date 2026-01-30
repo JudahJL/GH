@@ -20,3 +20,8 @@ services:
         generateValue: true
       - key: WEB_CONCURRENCY
         value: 4
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.13.4
+#        value: Predictive Utilization Garbage Surveillance Intelligence
