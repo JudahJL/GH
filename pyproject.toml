@@ -4,15 +4,20 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.13"
 dependencies = [
+    "dj-database-url>=3.1.0",
     "django>=6.0.1",
     "django-dotenv>=1.4.2",
     "folium>=0.20.0",
     "geopy>=2.4.1",
     "google-genai>=1.60.0",
+    "gunicorn>=24.1.1",
     "ipykernel>=7.1.0",
     "matplotlib>=3.10.8",
     "opencv-python>=4.13.0.90",
+    "psycopg[binary]>=3.3.2",
     "pydantic>=2.12.5",
     "scikit-image>=0.26.0",
     "torchvision>=0.25.0",
+    "unicorn>=2.1.4",
+    "whitenoise[brotli]>=6.11.0",
 ]
