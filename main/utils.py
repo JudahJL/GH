@@ -202,28 +202,32 @@ def create_or_update_ticket(osm_id: Optional[int] = None, osm_type: Optional[str
 
 
 def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif):
+    # 1. GPS Validation
     if image_exif.latitude is None or image_exif.longitude is None:
         print("Image has no GPS data.")
         return {
             "status": "Error",
-            "message": "GPS Missing: This image has no location data. Please upload an original photo taken with location services enabled."
+            "message": "GPS Missing: Please upload an original photo with location data."
         }
 
+    # 2. Geocoding (with Fallback)
     osm_id, osm_type = None, None
-
     try:
-
-        nominatim = Nominatim(user_agent="testing")
-
-        location = nominatim.reverse(query=(image_exif.latitude, image_exif.longitude,), exactly_one=True)
-
-        osm_id, osm_type = location.raw['osm_id'], location.raw['osm_type']
-
+        nominatim = Nominatim(user_agent="smart_city_app")
+        query = f"{image_exif.latitude}, {image_exif.longitude}"
+        location = nominatim.reverse(query, exactly_one=True)
+        if location and hasattr(location, 'raw'):
+            osm_id = location.raw.get('osm_id')
+            osm_type = location.raw.get('osm_type')
     except Exception as e:
-        print(f"Geocoding service failed: {e}")
+        print(f"Geocoding Warning: {e}")
 
+    if osm_id is None:
+        osm_id = 999999
+        osm_type = "unknown_way"
+
+    # 3. Local AI Inference
     img_transformed = test_transforms(img).unsqueeze(0).to(device)
-
     with torch.inference_mode():
         logits = model(img_transformed)
         probs = torch.softmax(logits, dim=1)
@@ -231,63 +235,68 @@ def run_smart_city_pipeline(img: Image.Image, image_exif: ImageExif):
         conf = probs[0][pred_idx].item()
 
     ai_label = CLASS_NAMES[pred_idx]
-    print(f"Local AI result: {ai_label} ({conf * 100:.1f}% Confidence) ")
+    print(f"Local AI: {ai_label} ({conf * 100:.1f}%)")
 
+    # --- PATH A: CLEAN ROAD (Auto-Resolve) ---
     if ai_label == "0_clean_road" and conf > 0.7:
-        print("Status: Clean/ Normal. No further action needed.")
+        print("Status: Clean. Checking for tickets to resolve...")
+        query = Q(osm_id=osm_id) & Q(osm_type=osm_type) & Q(status=TrashTicket.Status.OPEN)
+        old_ticket = TrashTicket.objects.filter(query).first()
+
+        if old_ticket:
+            old_ticket.status = TrashTicket.Status.RESOLVED
+            old_ticket.last_seen = datetime.now(timezone.utc)
+
+            # Save proof image
+            buff = io.BytesIO()
+            img.save(buff, format='JPEG')
+            old_ticket.image.save(f"resolved_{old_ticket.id}.jpg", ContentFile(buff.getvalue()), save=True)
+
+            print(f"Auto-resolved Ticket #{old_ticket.id}")
+
         return {"status": "Clean", "action": "None"}
 
-    # The Duplicate Cheks
-    is_duplicate = False
+    # --- PATH B: WASTE DETECTED ---
+
+    # Check if we already have a ticket here
     query = Q(osm_id=osm_id) & Q(osm_type=osm_type) & Q(status=TrashTicket.Status.OPEN)
     old_ticket = TrashTicket.objects.filter(query).first()
+
     if old_ticket:
-        old_image = Image.open(old_ticket.image)
-        old_image = old_image.convert("RGB")
+        # OPTIMIZATION: We have a ticket, and Local AI sees waste.
+        # We don't need Gemini to tell us if it's the "same" pile.
+        # If it's the same, we update. If it's different, we update.
+        # So we just skip straight to updating.
 
-        # a. Fast pixel check
-        if fast_pixel_check(img, old_image):
-            print("Same image detected locally")
-            is_duplicate = True
+        print(f"Update Existing Ticket #{old_ticket.id}")
 
-        else:
-            # b. Gemini Visual Comparison
-            print("Running gemini duplication check")
-            duplicate_report = check_if_duplicate_waste(old_image, img)
-            is_duplicate = duplicate_report.is_same
-
-            if not is_duplicate:
-                print("Old trash cleared.")
-                old_ticket.status = TrashTicket.Status.RESOLVED
-                old_ticket.save(update_fields=['status'])
-
-    # if is_duplicate:
-    #     return create_or_update_ticket(img=img, ticket=old_ticket)
-    if is_duplicate:
-        # Update the ticket in DB
+        # We still run fast_pixel_check just to log if it's an identical frame (optional)
+        # but we perform the update regardless.
         updated_ticket = create_or_update_ticket(img=img, ticket=old_ticket)
 
-        # --- FIX: Return a Dictionary with "Duplicate" status instead of the object ---
         return {
             "status": "Duplicate",
-            "message": "This specific waste pile is already tracked in our system.",
+            "message": "Location active. Ticket updated with latest evidence.",
             "severity": updated_ticket.severity,
             "action": updated_ticket.action,
             "hours_unattended": updated_ticket.hours_unattended,
             "ticket_id": updated_ticket.id,
             "waste_type": "Urban Mix"
         }
+
     else:
-        print(" Potential Waste Detected. Requesting for gemini verification...")
+        # --- PATH C: NEW TICKET (Requires Verification) ---
+        # Only spend money on Gemini if it's actually a NEW incident
+        print("New potential hotspot. verifying with Gemini...")
+
         gemini_report = generate_inspector_report(img)
 
-        # check if gemini agrees with model
+        # Gemini double-check (Safety Layer)
         if not gemini_report.is_waste_present:
-            print("False alarm")
+            print("Gemini overruled Local AI (False Alarm)")
             return {"status": "False Alarm", "action": "None"}
 
-        # generate the ticket
-        print("Generating the ticket")
+        print("Confirmed. Generating new ticket.")
         ticket = create_or_update_ticket(gemini_report=gemini_report,
                                          image_exif=image_exif, osm_id=osm_id, osm_type=osm_type, img=img)
         return ticket
@@ -369,3 +378,65 @@ def generate_heatmap(tickets, height="350px"):
         ).add_to(m)
 
     return m._repr_html_()
+
+
+# --- ADD THIS TO THE BOTTOM OF main/utils.py ---
+
+def verify_and_resolve_ticket(ticket_id: int, proof_image: Image.Image):
+    """
+    1. Runs the proof image through the AI model.
+    2. If AI says 'Clean' (or low confidence dirty), it auto-resolves the ticket.
+    3. Updates the database status and saves the new 'Clean' image.
+    """
+    try:
+        ticket = TrashTicket.objects.get(id=ticket_id)
+    except TrashTicket.DoesNotExist:
+        return {"success": False, "message": "Ticket not found."}
+
+    # 1. PREPARE IMAGE FOR AI
+    # Ensure image is RGB (removes Alpha channel if PNG)
+    if proof_image.mode != "RGB":
+        proof_image = proof_image.convert("RGB")
+
+    img_transformed = test_transforms(proof_image).unsqueeze(0).to(device)
+
+    # 2. RUN LOCAL AI CHECK
+    with torch.inference_mode():
+        logits = model(img_transformed)
+        probs = torch.softmax(logits, dim=1)
+        pred_idx = torch.argmax(probs, dim=1).item()
+        conf = probs[0][pred_idx].item()
+
+    ai_label = CLASS_NAMES[pred_idx]
+
+    # 3. DECISION LOGIC
+    # We resolve if the model sees "Clean Road" OR if it sees "Dirty Road" but with very low confidence (< 50%)
+    # This prevents the system from getting stuck if there is a tiny bit of dust left.
+    is_clean = (ai_label == "0_clean_road") or (ai_label == "1_dirty_road" and conf < 0.5)
+
+    if is_clean:
+        # A. UPDATE STATUS AUTOMATICALLY
+        ticket.status = TrashTicket.Status.RESOLVED
+        ticket.last_seen = datetime.now(timezone.utc)
+
+        # B. SAVE THE PROOF IMAGE (Overwrites the old dirty image with the clean one)
+        # This ensures the registry shows the CURRENT clean state.
+        buff = io.BytesIO()
+        proof_image.save(buff, format='JPEG')
+
+        # Save with a new name to avoid browser caching issues
+        new_filename = f"resolved_{ticket.id}_{uuid.uuid4().hex[:6]}.jpg"
+        ticket.image.save(new_filename, ContentFile(buff.getvalue()), save=True)
+
+        return {
+            "success": True,
+            "message": f"Verified! AI detected '{ai_label}' ({conf * 100:.1f}%). Ticket #{ticket.id} is now RESOLVED.",
+            "conf": conf
+        }
+    else:
+        # C. REJECT RESOLUTION
+        return {
+            "success": False,
+            "message": f"Verification Failed. AI still detects '{ai_label}' ({conf * 100:.1f}%). Please clean the area thoroughly.",
+            "conf": conf
+        }

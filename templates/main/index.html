@@ -87,25 +87,33 @@
                 Live Map View
             </a>
             <a href="{% url 'registry' %}" class="flex items-center gap-3 px-3 py-2 text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800 rounded-md transition-colors">
-                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
                 Ticket Registry
             </a>
         </nav>
 
         <div class="p-4 border-t border-slate-800">
-            <div class="bg-slate-800 rounded-lg p-4">
-                <p class="text-xs text-slate-400 uppercase tracking-wider font-semibold mb-2">System Status</p>
-                <div class="flex items-center gap-2 mb-1">
-                    <span class="relative flex h-2 w-2">
-                      <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                      <span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-                    </span>
-                    <span class="text-xs font-mono text-green-400">ONLINE</span>
+            <div class="bg-slate-800 rounded-lg p-4 shadow-inner border border-slate-700/50">
+                <div class="flex justify-between items-center mb-2">
+                    <p class="text-[10px] text-slate-400 uppercase tracking-widest font-bold">System Node</p>
+                    <span class="text-[9px] text-slate-500 font-mono">{{ system_info.last_sync }}</span>
                 </div>
-                <p class="text-[10px] text-slate-500">Udaipur Node • v2.4.0</p>
+
+                <div class="flex items-center gap-2 mb-2">
+                    <span class="relative flex h-2.5 w-2.5">
+                      <span class="{{ system_info.ping }} absolute inline-flex h-full w-full rounded-full {{ system_info.dot_class }} opacity-75"></span>
+                      <span class="relative inline-flex rounded-full h-2.5 w-2.5 {{ system_info.dot_class }}"></span>
+                    </span>
+                    <span class="text-xs font-mono font-bold {{ system_info.status_class }}">{{ system_info.status }}</span>
+                </div>
+
+                <div class="flex flex-col gap-0.5">
+                    <p class="text-[11px] text-slate-300 font-medium">{{ system_info.node }}</p>
+                    <p class="text-[10px] text-slate-500">{{ system_info.version }}</p>
+                </div>
             </div>
         </div>
-    </aside>
+        </aside>
 
     <main class="flex-1 flex flex-col h-full bg-slate-50 relative overflow-hidden">
 
